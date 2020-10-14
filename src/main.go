@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"unsafe"
 )
@@ -21,8 +22,10 @@ type PrepareResult int
 
 const (
 	PREPARE_SUCCESS PrepareResult = iota
-	PREPARE_UNRECOGNIZED_STATEMENT
+	PREPARE_NEGATIVE_ID
+	PREPARE_STRING_TOO_LONG
 	PREPARE_SYNTAX_ERROR
+	PREPARE_UNRECOGNIZED_STATEMENT
 )
 
 type ExecuteResult int
@@ -72,7 +75,12 @@ func printRow(row *Row) {
 	if *row == (Row{}) {
 		return
 	}
-	fmt.Printf("(%d, %s, %s)\n", row.Id, string(row.Username[:]), string(row.Email[:]))
+	fmt.Printf(
+		"(%d, %s, %s)\n",
+		row.Id,
+		strings.Replace(string(row.Username[:]), "\x00", "", -1),
+		strings.Replace(string(row.Email[:]), "\x00", "", -1),
+	)
 }
 
 func serializeRow(source *Row, destination *bytes.Buffer) {
@@ -97,7 +105,7 @@ func rowSlot(table *Table, rowNum int) *bytes.Buffer {
 }
 
 func freeTable(table *Table) {
-	for i := 0; table.pages[i] != nil; i++ {
+	for i := 0; i < len(table.pages); i++ {
 		table.pages[i] = nil
 	}
 	table = nil
@@ -111,17 +119,35 @@ func doMetaCommand(input string, table *Table) MetaCommandResult {
 	return META_COMMAND_UNRECOGNIZED_COMMAND
 }
 
+func prepareInsert(input string, statement *Statement) PrepareResult {
+	statement.t = STATEMENT_INSERT
+	fields := strings.Fields(input)
+	if len(fields) != 4 {
+		return PREPARE_SYNTAX_ERROR
+	}
+
+	_, idString, username, email := fields[0], fields[1], fields[2], fields[3]
+	if idString == "" || username == "" || email == "" {
+		return PREPARE_SYNTAX_ERROR
+	}
+
+	id, _ := strconv.Atoi(idString)
+	if id < 0 {
+		return PREPARE_NEGATIVE_ID
+	}
+	if len(username) > COLUMN_USERNAME_SIZE {
+		return PREPARE_STRING_TOO_LONG
+	}
+
+	statement.row.Id = int32(id)
+	copy(statement.row.Username[:], []rune(username))
+	copy(statement.row.Email[:], []rune(email))
+	return EXECUTE_SUCCESS
+}
+
 func prepareStatement(input string, statement *Statement) PrepareResult {
 	if len(input) >= 6 && input[:6] == "insert" {
-		statement.t = STATEMENT_INSERT
-		var username, email string
-		n, _ := fmt.Sscanf(input, "insert %d %s %s", &statement.row.Id, &username, &email)
-		copy(statement.row.Username[:], []rune(username))
-		copy(statement.row.Email[:], []rune(email))
-		if n < 3 {
-			return PREPARE_SYNTAX_ERROR
-		}
-		return PREPARE_SUCCESS
+		return prepareInsert(input, statement)
 	}
 	if input == "select" {
 		statement.t = STATEMENT_SELECT
@@ -160,7 +186,7 @@ func executeStatement(statement *Statement, table *Table) ExecuteResult {
 }
 
 func printPrompt() {
-	fmt.Print("db> ")
+	fmt.Print("db > ")
 }
 
 func main() {
@@ -193,6 +219,12 @@ func main() {
 		switch prepareStatement(input, &statement) {
 		case PREPARE_SUCCESS:
 			break
+		case PREPARE_NEGATIVE_ID:
+			fmt.Println("ID must be positive.")
+			continue
+		case PREPARE_STRING_TOO_LONG:
+			fmt.Println("String is too long.")
+			continue
 		case PREPARE_SYNTAX_ERROR:
 			fmt.Println("Syntax error. Could not parse statement.")
 			continue
