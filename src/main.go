@@ -61,14 +61,47 @@ type Statement struct {
 const (
 	TABLE_MAX_PAGES = 100
 	PAGE_SIZE       = 4096
-	ROW_SIZE        = unsafe.Sizeof(Row{})
-	ROWS_PER_PAGE   = int(PAGE_SIZE / ROW_SIZE)
+	ROW_SIZE        = uint32(unsafe.Sizeof(Row{}))
+	ROWS_PER_PAGE   = PAGE_SIZE / ROW_SIZE
 	TABLE_MAX_ROWS  = ROWS_PER_PAGE * TABLE_MAX_PAGES
 )
 
+type Pager struct {
+	fileDescriptor *os.File
+	fileLength     uint32
+	pages          [TABLE_MAX_PAGES]*bytes.Buffer
+}
+
 type Table struct {
-	numRows int
-	pages   [TABLE_MAX_PAGES]*bytes.Buffer
+	pager   *Pager
+	numRows uint32
+}
+
+func pagerOpen(filename string) *Pager {
+	f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		fmt.Println("Unable to open file")
+		os.Exit(8)
+	}
+	fileLength, _ := f.Seek(0, -2)
+
+	pager := &Pager{}
+	pager.fileDescriptor = f
+	pager.fileLength = uint32(fileLength)
+
+	for i := 0; i < TABLE_MAX_PAGES; i++ {
+		pager.pages[i] = nil
+	}
+	return pager
+}
+
+func dbOpen(filename string) *Table {
+	pager := pagerOpen(filename)
+	numRows := pager.fileLength / ROW_SIZE
+	table := &Table{}
+	table.pager = pager
+	table.numRows = numRows
+	return table
 }
 
 func printRow(row *Row) {
@@ -94,13 +127,38 @@ func deserializeRow(source *bytes.Buffer, destination *Row) {
 	_ = binary.Read(source, binary.BigEndian, destination)
 }
 
-func rowSlot(table *Table, rowNum int) *bytes.Buffer {
-	pageNum := rowNum / ROWS_PER_PAGE
-	page := table.pages[pageNum]
-	if page == nil {
-		table.pages[pageNum] = bytes.NewBuffer(make([]byte, 0, PAGE_SIZE))
-		page = table.pages[pageNum]
+func getPage(pager *Pager, pageNum uint32) *bytes.Buffer {
+	if pageNum > TABLE_MAX_PAGES {
+		panic(fmt.Sprintf("Tried to fetch page number out of bounds. %d > %d\n", pageNum, TABLE_MAX_PAGES))
 	}
+
+	if pager.pages[pageNum] == nil {
+		// Cache miss. Allocate memory and load from file.
+		page := bytes.NewBuffer(make([]byte, 0, PAGE_SIZE))
+		numPages := pager.fileLength / PAGE_SIZE
+
+		// We might save a partial page at the end of the file
+		if pager.fileLength%PAGE_SIZE != 0 {
+			numPages += 1
+		}
+
+		if pageNum <= numPages {
+			_, err := pager.fileDescriptor.Seek(int64(pageNum*PAGE_SIZE), 0)
+			if err != nil {
+				panic(fmt.Sprintf("Error reading file: %d\n", err))
+			}
+		}
+		pager.pages[pageNum] = page
+	}
+	return pager.pages[pageNum]
+}
+
+func rowSlot(table *Table, rowNum uint32) *bytes.Buffer {
+	pageNum := rowNum / ROWS_PER_PAGE
+	page := getPage(table.pager, pageNum)
+	rowOffset := rowNum % ROWS_PER_PAGE
+	byteOffset := rowOffset * ROW_SIZE
+	page.Grow(int(byteOffset))
 	return page
 }
 
@@ -168,7 +226,7 @@ func executeInsert(statement *Statement, table *Table) ExecuteResult {
 
 func executeSelect(statement *Statement, table *Table) ExecuteResult {
 	var row Row
-	for i := 0; i < table.numRows; i++ {
+	for i := uint32(0); i < table.numRows; i++ {
 		deserializeRow(rowSlot(table, i), &row)
 		printRow(&row)
 	}

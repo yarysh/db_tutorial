@@ -107,3 +107,30 @@ func TestIdIsNegative(t *testing.T) {
 		t.FailNow()
 	}
 }
+
+func TestDataAfterClosingConnection(t *testing.T) {
+	result1 := runScript([]string{
+		"insert 1 user1 person1@example.com",
+		".exit",
+	})
+	expect1 := []string{
+		"db > Executed.",
+		"db > ",
+	}
+	if !reflect.DeepEqual(result1, expect1) {
+		t.FailNow()
+	}
+
+	result2 := runScript([]string{
+		"select",
+		".exit",
+	})
+	expect2 := []string{
+		"db > (1, user1, person1@example.com)",
+		"Executed.",
+		"db > ",
+	}
+	if !reflect.DeepEqual(result2, expect2) {
+		t.FailNow()
+	}
+}
