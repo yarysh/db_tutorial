@@ -153,6 +153,54 @@ func getPage(pager *Pager, pageNum uint32) *bytes.Buffer {
 	return pager.pages[pageNum]
 }
 
+func dbClose(table *Table) {
+	pager := table.pager
+	numFullPages := table.numRows / ROWS_PER_PAGE
+
+	for i := uint32(0); i < numFullPages; i++ {
+		if pager.pages[i] == nil {
+			continue
+		}
+		pagerFlush(pager, i, PAGE_SIZE)
+		pager.pages[i] = nil
+	}
+
+	numAdditionalRows := table.numRows % ROWS_PER_PAGE
+	if numAdditionalRows > 0 {
+		pageNum := numFullPages
+		if pager.pages[pageNum] != nil {
+			pagerFlush(pager, pageNum, numAdditionalRows*ROW_SIZE)
+			pager.pages[pageNum] = nil
+		}
+	}
+
+	err := pager.fileDescriptor.Close()
+	if err != nil {
+		panic(fmt.Sprintf("Error closing db file.\n"))
+	}
+
+	for i := uint32(0); i < TABLE_MAX_PAGES; i++ {
+		page := pager.pages[i]
+		if page != nil {
+			pager.pages[i] = nil
+		}
+	}
+}
+
+func pagerFlush(pager *Pager, pageNum uint32, size uint32) {
+	if pager.pages[pageNum] == nil {
+		panic(fmt.Sprintf("Tried to flush null page\n"))
+	}
+	_, err := pager.fileDescriptor.Seek(int64(pageNum*PAGE_SIZE), 0)
+	if err != nil {
+		panic(fmt.Sprintf("Error seeking: %d\n", err))
+	}
+	_, err = pager.fileDescriptor.Write(pager.pages[pageNum].Bytes())
+	if err != nil {
+		panic(fmt.Sprintf("Error writing: %d\n", err))
+	}
+}
+
 func rowSlot(table *Table, rowNum uint32) *bytes.Buffer {
 	pageNum := rowNum / ROWS_PER_PAGE
 	page := getPage(table.pager, pageNum)
@@ -162,16 +210,9 @@ func rowSlot(table *Table, rowNum uint32) *bytes.Buffer {
 	return page
 }
 
-func freeTable(table *Table) {
-	for i := 0; i < len(table.pages); i++ {
-		table.pages[i] = nil
-	}
-	table = nil
-}
-
 func doMetaCommand(input string, table *Table) MetaCommandResult {
 	if input == ".exit" {
-		freeTable(table)
+		dbClose(table)
 		os.Exit(0)
 	}
 	return META_COMMAND_UNRECOGNIZED_COMMAND
@@ -248,7 +289,12 @@ func printPrompt() {
 }
 
 func main() {
-	table := Table{}
+	if len(os.Args) < 2 {
+		panic(fmt.Sprintf("Must supply a database filename.\n"))
+	}
+
+	filename := os.Args[1]
+	table := dbOpen(filename)
 
 	reader := bufio.NewReader(os.Stdin)
 	for {
@@ -264,7 +310,7 @@ func main() {
 		}
 
 		if input[0] == '.' {
-			switch doMetaCommand(input, &table) {
+			switch doMetaCommand(input, table) {
 			case META_COMMAND_SUCCESS:
 				continue
 			case META_COMMAND_UNRECOGNIZED_COMMAND:
@@ -291,7 +337,7 @@ func main() {
 			continue
 		}
 
-		switch executeStatement(&statement, &table) {
+		switch executeStatement(&statement, table) {
 		case EXECUTE_SUCCESS:
 			fmt.Println("Executed.")
 			break
