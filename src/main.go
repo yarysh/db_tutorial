@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -83,7 +84,7 @@ func pagerOpen(filename string) *Pager {
 		fmt.Println("Unable to open file")
 		os.Exit(8)
 	}
-	fileLength, _ := f.Seek(0, -2)
+	fileLength, _ := f.Seek(0, 2)
 
 	pager := &Pager{}
 	pager.fileDescriptor = f
@@ -134,7 +135,7 @@ func getPage(pager *Pager, pageNum uint32) *bytes.Buffer {
 
 	if pager.pages[pageNum] == nil {
 		// Cache miss. Allocate memory and load from file.
-		page := bytes.NewBuffer(make([]byte, 0, PAGE_SIZE))
+		page := make([]byte, PAGE_SIZE)
 		numPages := pager.fileLength / PAGE_SIZE
 
 		// We might save a partial page at the end of the file
@@ -143,12 +144,13 @@ func getPage(pager *Pager, pageNum uint32) *bytes.Buffer {
 		}
 
 		if pageNum <= numPages {
-			_, err := pager.fileDescriptor.Seek(int64(pageNum*PAGE_SIZE), 0)
-			if err != nil {
-				panic(fmt.Sprintf("Error reading file: %d\n", err))
+			pager.fileDescriptor.Seek(int64(pageNum*PAGE_SIZE), 0)
+			_, err := pager.fileDescriptor.Read(page)
+			if err != nil && err != io.EOF {
+				panic(fmt.Sprintf("Error reading file: %s\n", err))
 			}
 		}
-		pager.pages[pageNum] = page
+		pager.pages[pageNum] = bytes.NewBuffer(page)
 	}
 	return pager.pages[pageNum]
 }
