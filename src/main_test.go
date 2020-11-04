@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -10,7 +11,7 @@ import (
 )
 
 func runScript(commands []string) []string {
-	cmd := exec.Command("go", "run", "main.go")
+	cmd := exec.Command("go", "run", "main.go", "test.db")
 	stdin, _ := cmd.StdinPipe()
 	defer stdin.Close()
 
@@ -35,6 +36,8 @@ func TestInsertAndRetrievesARow(t *testing.T) {
 		"Executed.",
 		"db > ",
 	}
+	defer os.Remove("test.db")
+
 	if !reflect.DeepEqual(result, expect) {
 		t.FailNow()
 	}
@@ -46,6 +49,8 @@ func TestTableIsFull(t *testing.T) {
 		scripts[i] = fmt.Sprintf("insert %d user%d person%d@example.com", i, i, i)
 	}
 	scripts[len(scripts)-1] = ".exit"
+	defer os.Remove("test.db")
+
 	result := runScript(scripts)
 	if result[len(scripts)-2] != "db > Error: Table full." {
 		t.FailNow()
@@ -60,6 +65,8 @@ func TestInsertingMaximumLength(t *testing.T) {
 		"select",
 		".exit",
 	}
+	defer os.Remove("test.db")
+
 	result := runScript(script)
 	expect := []string{
 		"db > Executed.",
@@ -80,6 +87,8 @@ func TestStringsAreTooLong(t *testing.T) {
 		"select",
 		".exit",
 	}
+	defer os.Remove("test.db")
+
 	result := runScript(script)
 	expect := []string{
 		"db > String is too long.",
@@ -97,6 +106,8 @@ func TestIdIsNegative(t *testing.T) {
 		"select",
 		".exit",
 	}
+	defer os.Remove("test.db")
+
 	result := runScript(script)
 	expect := []string{
 		"db > ID must be positive.",
@@ -113,6 +124,8 @@ func TestDataAfterClosingConnection(t *testing.T) {
 		"insert 1 user1 person1@example.com",
 		".exit",
 	})
+	defer os.Remove("test.db")
+
 	expect1 := []string{
 		"db > Executed.",
 		"db > ",

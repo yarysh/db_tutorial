@@ -118,24 +118,22 @@ func printRow(row *Row) {
 }
 
 func serializeRow(source *Row, destination *bytes.Buffer) {
-	err := binary.Write(destination, binary.BigEndian, source)
-	if err != nil {
-		panic(fmt.Sprintf("Can't serialize row '%s'.\n", err))
-	}
+	binary.Write(destination, binary.BigEndian, source)
 }
 
 func deserializeRow(source *bytes.Buffer, destination *Row) {
-	_ = binary.Read(source, binary.BigEndian, destination)
+	binary.Read(source, binary.BigEndian, destination)
 }
 
 func getPage(pager *Pager, pageNum uint32) *bytes.Buffer {
 	if pageNum > TABLE_MAX_PAGES {
-		panic(fmt.Sprintf("Tried to fetch page number out of bounds. %d > %d\n", pageNum, TABLE_MAX_PAGES))
+		_, _ = fmt.Fprintf(os.Stderr, "Tried to fetch page number out of bounds. %d > %d\n", pageNum, TABLE_MAX_PAGES)
+		os.Exit(8)
 	}
 
 	if pager.pages[pageNum] == nil {
 		// Cache miss. Allocate memory and load from file.
-		page := make([]byte, PAGE_SIZE)
+		page := bytes.NewBuffer(make([]byte, 0, PAGE_SIZE))
 		numPages := pager.fileLength / PAGE_SIZE
 
 		// We might save a partial page at the end of the file
@@ -145,12 +143,17 @@ func getPage(pager *Pager, pageNum uint32) *bytes.Buffer {
 
 		if pageNum <= numPages {
 			pager.fileDescriptor.Seek(int64(pageNum*PAGE_SIZE), 0)
-			_, err := pager.fileDescriptor.Read(page)
+			tmp := make([]byte, PAGE_SIZE)
+			n, err := pager.fileDescriptor.Read(tmp)
 			if err != nil && err != io.EOF {
-				panic(fmt.Sprintf("Error reading file: %s\n", err))
+				_, _ = fmt.Fprintf(os.Stderr, "Error reading file: %s\n", err)
+				os.Exit(8)
+			}
+			if n != 0 {
+				page.Write(tmp)
 			}
 		}
-		pager.pages[pageNum] = bytes.NewBuffer(page)
+		pager.pages[pageNum] = page
 	}
 	return pager.pages[pageNum]
 }
@@ -178,7 +181,8 @@ func dbClose(table *Table) {
 
 	err := pager.fileDescriptor.Close()
 	if err != nil {
-		panic(fmt.Sprintf("Error closing db file.\n"))
+		_, _ = fmt.Fprintln(os.Stderr, "Error closing db file.")
+		os.Exit(8)
 	}
 
 	for i := uint32(0); i < TABLE_MAX_PAGES; i++ {
@@ -191,15 +195,18 @@ func dbClose(table *Table) {
 
 func pagerFlush(pager *Pager, pageNum uint32, size uint32) {
 	if pager.pages[pageNum] == nil {
-		panic(fmt.Sprintf("Tried to flush null page\n"))
+		_, _ = fmt.Fprintln(os.Stderr, "Tried to flush null page")
+		os.Exit(8)
 	}
 	_, err := pager.fileDescriptor.Seek(int64(pageNum*PAGE_SIZE), 0)
 	if err != nil {
-		panic(fmt.Sprintf("Error seeking: %d\n", err))
+		_, _ = fmt.Fprintf(os.Stderr, "Error seeking: %d\n", err)
+		os.Exit(8)
 	}
 	_, err = pager.fileDescriptor.Write(pager.pages[pageNum].Bytes())
 	if err != nil {
-		panic(fmt.Sprintf("Error writing: %d\n", err))
+		_, _ = fmt.Fprintf(os.Stderr, "Error writing: %d\n", err)
+		os.Exit(8)
 	}
 }
 
@@ -292,7 +299,8 @@ func printPrompt() {
 
 func main() {
 	if len(os.Args) < 2 {
-		panic(fmt.Sprintf("Must supply a database filename.\n"))
+		_, _ = fmt.Fprintln(os.Stderr, "Must supply a database filename.")
+		os.Exit(8)
 	}
 
 	filename := os.Args[1]
@@ -304,7 +312,7 @@ func main() {
 		input, err := reader.ReadString('\n')
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "Error reading input.")
-			os.Exit(1)
+			os.Exit(8)
 		}
 		input = strings.TrimSpace(input)
 		if len(input) == 0 {
