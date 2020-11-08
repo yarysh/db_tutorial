@@ -78,6 +78,28 @@ type Table struct {
 	numRows uint32
 }
 
+type Cursor struct {
+	table      *Table
+	rowNum     uint32
+	endOfTable bool
+}
+
+func tableStart(table *Table) *Cursor {
+	cursor := &Cursor{}
+	cursor.table = table
+	cursor.rowNum = 0
+	cursor.endOfTable = table.numRows == 0
+	return cursor
+}
+
+func tableEnd(table *Table) *Cursor {
+	cursor := &Cursor{}
+	cursor.table = table
+	cursor.rowNum = table.numRows
+	cursor.endOfTable = true
+	return cursor
+}
+
 func pagerOpen(filename string) *Pager {
 	f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
@@ -210,13 +232,21 @@ func pagerFlush(pager *Pager, pageNum uint32, size uint32) {
 	}
 }
 
-func rowSlot(table *Table, rowNum uint32) *bytes.Buffer {
+func cursorValue(cursor *Cursor) *bytes.Buffer {
+	rowNum := cursor.rowNum
 	pageNum := rowNum / ROWS_PER_PAGE
-	page := getPage(table.pager, pageNum)
+	page := getPage(cursor.table.pager, pageNum)
 	rowOffset := rowNum % ROWS_PER_PAGE
 	byteOffset := rowOffset * ROW_SIZE
 	page.Grow(int(byteOffset))
 	return page
+}
+
+func cursorAdvance(cursor *Cursor) {
+	cursor.rowNum += 1
+	if cursor.rowNum >= cursor.table.numRows {
+		cursor.endOfTable = true
+	}
 }
 
 func doMetaCommand(input string, table *Table) MetaCommandResult {
@@ -268,17 +298,19 @@ func executeInsert(statement *Statement, table *Table) ExecuteResult {
 	if table.numRows >= TABLE_MAX_ROWS {
 		return EXECUTE_TABLE_FULL
 	}
-
-	serializeRow(&statement.row, rowSlot(table, table.numRows))
+	cursor := tableEnd(table)
+	serializeRow(&statement.row, cursorValue(cursor))
 	table.numRows++
 	return EXECUTE_SUCCESS
 }
 
 func executeSelect(statement *Statement, table *Table) ExecuteResult {
+	cursor := tableStart(table)
 	var row Row
-	for i := uint32(0); i < table.numRows; i++ {
-		deserializeRow(rowSlot(table, i), &row)
+	for cursor.endOfTable == false {
+		deserializeRow(cursorValue(cursor), &row)
 		printRow(&row)
+		cursorAdvance(cursor)
 	}
 	return EXECUTE_SUCCESS
 }
