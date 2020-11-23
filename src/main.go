@@ -92,6 +92,30 @@ func tableStart(table *Table) *Cursor {
 	return cursor
 }
 
+type NodeType int
+
+const (
+	NODE_INTERNAL NodeType = iota
+	NODE_LEAF
+)
+
+/*
+	Common Node Header Layout
+*/
+const NODE_TYPE_SIZE = unsafe.Sizeof(uint8(0))
+const NODE_TYPE_OFFSET = 0
+const IS_ROOT_SIZE = unsafe.Sizeof(uint8(0))
+const IS_ROOT_OFFSET = NODE_TYPE_SIZE
+const PARENT_POINTER_SIZE = IS_ROOT_OFFSET + IS_ROOT_SIZE
+const COMMON_NODE_HEADER_SIZE = NODE_TYPE_SIZE + IS_ROOT_SIZE + PARENT_POINTER_SIZE
+
+/*
+	Leaf Node Header Layout
+*/
+const LEAF_NODE_NUM_CELLS_SIZE = unsafe.Sizeof(uint32(0))
+const LEAF_NODE_NUM_CELLS_OFFSET = COMMON_NODE_HEADER_SIZE
+const LEAF_NODE_HEADER_SIZE = COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE
+
 func tableEnd(table *Table) *Cursor {
 	cursor := &Cursor{}
 	cursor.table = table
