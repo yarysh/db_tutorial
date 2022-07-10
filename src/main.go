@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"strconv"
 	"unsafe"
 )
 
@@ -27,6 +28,8 @@ type PrepareResult int
 
 const (
 	PrepareSuccess = PrepareResult(iota)
+	PrepareNegativeID
+	PrepareStringTooLong
 	PrepareSyntaxError
 	PrepareUnrecognizedStatement
 )
@@ -134,22 +137,40 @@ func doMetaCommand(inputScanner *bufio.Scanner) MetaCommandResult {
 	return MetaCommandUnrecognizedCommand
 }
 
+func prepareInsert(inputScanner *bufio.Scanner, statement *Statement) PrepareResult {
+	statement.Type = StatementInsert
+
+	fields := bytes.Fields(inputScanner.Bytes())
+	if len(fields) != 4 {
+		return PrepareSyntaxError
+	}
+
+	_, idString, username, email := fields[0], string(fields[1]), string(fields[2]), string(fields[3])
+	if len(idString) == 0 || len(username) == 0 || len(email) == 0 {
+		return PrepareSyntaxError
+	}
+
+	id, err := strconv.Atoi(idString)
+	if id < 0 || err != nil {
+		return PrepareNegativeID
+	}
+	if len(username) > ColumnUsernameSize {
+		return PrepareStringTooLong
+	}
+	if len(email) > ColumnEmailSize {
+		return PrepareStringTooLong
+	}
+
+	statement.RowToInsert.ID = uint32(id)
+	copy(statement.RowToInsert.Username[:], []rune(username))
+	copy(statement.RowToInsert.Email[:], []rune(email))
+
+	return PrepareSuccess
+}
+
 func prepareStatement(inputScanner *bufio.Scanner, statement *Statement) PrepareResult {
 	if bytes.Equal(inputScanner.Bytes()[0:6], []byte("insert")) {
-		statement.Type = StatementInsert
-
-		var username, email string
-		argsAssigned, _ := fmt.Fscanf(bytes.NewBuffer(inputScanner.Bytes()), "insert %d %s %s",
-			&statement.RowToInsert.ID, &username, &email,
-		)
-		if argsAssigned < 3 {
-			return PrepareSyntaxError
-		}
-
-		copy(statement.RowToInsert.Username[:], []rune(username))
-		copy(statement.RowToInsert.Email[:], []rune(email))
-
-		return PrepareSuccess
+		return prepareInsert(inputScanner, statement)
 	}
 	if bytes.Equal(inputScanner.Bytes(), []byte("select")) {
 		statement.Type = StatementSelect
@@ -220,6 +241,12 @@ func main() {
 		switch prepareStatement(inputScanner, statement) {
 		case PrepareSuccess:
 			break
+		case PrepareNegativeID:
+			fmt.Println("ID must be positive.")
+			continue
+		case PrepareStringTooLong:
+			fmt.Println("String is too long.")
+			continue
 		case PrepareSyntaxError:
 			fmt.Println("Syntax error. Could not parse statement.")
 			continue
