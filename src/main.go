@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"unsafe"
@@ -65,9 +66,15 @@ const (
 	TableMaxRows  = RowsPerPage * TableMaxPages
 )
 
+type Pager struct {
+	FileDescriptor *os.File
+	FileLength     int
+	Pages          [TableMaxPages]*[RowsPerPage]*[RowSize]byte
+}
+
 type Table struct {
 	NumRows int
-	Pages   [TableMaxPages]*[RowsPerPage]*[RowSize]byte
+	Pager   *Pager
 }
 
 func printRow(row *Row) {
@@ -99,21 +106,80 @@ func deserializeRow(source *[RowSize]byte, destination *Row) {
 	binary.Read(bytes.NewBuffer(source[:]), binary.BigEndian, destination)
 }
 
+func getPage(pager *Pager, pageNum int) *[RowsPerPage]*[RowSize]byte {
+	if pageNum > TableMaxPages {
+		panic(fmt.Sprintf("Tried to fetch page number out of bounds. %d > %d\n", pageNum, TableMaxPages))
+	}
+
+	if pager.Pages[pageNum] == nil {
+		// Cache miss. Allocate memory and load from file.
+		page := &[RowsPerPage]*[RowSize]byte{}
+		numPages := pager.FileLength / PageSize
+
+		// We might save a partial page at the end of the file
+		if pager.FileLength%PageSize != 0 {
+			numPages += 1
+		}
+
+		if pageNum <= numPages {
+			pager.FileDescriptor.Seek(int64(pageNum*PageSize), 0)
+			tmp := make([]byte, PageSize)
+			n, err := pager.FileDescriptor.Read(tmp)
+			if err != nil && err != io.EOF {
+				_, _ = fmt.Fprintf(os.Stderr, "Error reading file: %s\n", err)
+				os.Exit(1)
+			}
+			if n != 0 {
+				for i := 0; i < n/RowSize; i++ {
+					if page[i] == nil {
+						page[i] = &[RowSize]byte{}
+					}
+					copy(page[i][:], tmp[i*RowSize:i*RowSize+RowSize])
+				}
+			}
+		}
+		pager.Pages[pageNum] = page
+	}
+	return pager.Pages[pageNum]
+}
+
 func rowSlot(table *Table, rowNum int) *[RowSize]byte {
 	pageNum := rowNum / RowsPerPage
 	rowNumOnPage := rowNum - pageNum*RowsPerPage
-
-	page := table.Pages[pageNum]
-	if page == nil {
-		table.Pages[pageNum] = &[RowsPerPage]*[RowSize]byte{}
+	page := getPage(table.Pager, pageNum)
+	if page[rowNumOnPage] == nil {
+		page[rowNumOnPage] = &[RowSize]byte{}
 	}
+	return page[rowNumOnPage]
+}
 
-	row := table.Pages[pageNum][rowNumOnPage]
-	if row == nil {
-		table.Pages[pageNum][rowNumOnPage] = &[RowSize]byte{}
+func pagerOpen(filename string) *Pager {
+	f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		fmt.Println("Unable to open file")
+		os.Exit(1)
 	}
+	fileLength, _ := f.Seek(0, 2)
 
-	return table.Pages[pageNum][rowNumOnPage]
+	pager := &Pager{}
+	pager.FileDescriptor = f
+	pager.FileLength = int(fileLength)
+
+	for i := 0; i < TableMaxPages; i++ {
+		pager.Pages[i] = nil
+	}
+	return pager
+}
+
+func dbOpen(filename string) *Table {
+	pager := pagerOpen(filename)
+	numRows := pager.FileLength / RowSize
+
+	table := &Table{}
+	table.Pager = pager
+	table.NumRows = numRows
+
+	return table
 }
 
 func printPrompt() {
@@ -130,8 +196,66 @@ func readInput(inputScanner *bufio.Scanner) {
 	}
 }
 
-func doMetaCommand(inputScanner *bufio.Scanner) MetaCommandResult {
+func pagerFlush(pager *Pager, pageNum int, size int) {
+	if pager.Pages[pageNum] == nil {
+		_, _ = fmt.Fprintln(os.Stderr, "Tried to flush null page")
+		os.Exit(1)
+	}
+	_, err := pager.FileDescriptor.Seek(int64(pageNum*PageSize), 0)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error seeking: %d\n", err)
+		os.Exit(1)
+	}
+	for _, row := range pager.Pages[pageNum] {
+		if row == nil {
+			continue
+		}
+		_, err = pager.FileDescriptor.Write(row[:])
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error writing: %d\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func dbClose(table *Table) {
+	pager := table.Pager
+	numFullPages := table.NumRows / RowsPerPage
+
+	for i := 0; i < numFullPages; i++ {
+		if pager.Pages[i] == nil {
+			continue
+		}
+		pagerFlush(pager, i, PageSize)
+		pager.Pages[i] = nil
+	}
+
+	numAdditionalRows := table.NumRows % RowsPerPage
+	if numAdditionalRows > 0 {
+		pageNum := numFullPages
+		if pager.Pages[pageNum] != nil {
+			pagerFlush(pager, pageNum, numAdditionalRows*RowSize)
+			pager.Pages[pageNum] = nil
+		}
+	}
+
+	err := pager.FileDescriptor.Close()
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "Error closing db file.")
+		os.Exit(1)
+	}
+
+	for i := uint32(0); i < TableMaxPages; i++ {
+		page := pager.Pages[i]
+		if page != nil {
+			pager.Pages[i] = nil
+		}
+	}
+}
+
+func doMetaCommand(inputScanner *bufio.Scanner, table *Table) MetaCommandResult {
 	if bytes.Equal(inputScanner.Bytes(), []byte(".exit")) {
+		dbClose(table)
 		os.Exit(0)
 	}
 	return MetaCommandUnrecognizedCommand
@@ -212,23 +336,22 @@ func executeStatement(statement *Statement, table *Table) ExecuteResult {
 	panic("Unknown execute statement.")
 }
 
-func NewTable() *Table {
-	table := &Table{}
-	for i := 0; i < TableMaxPages; i++ {
-		table.Pages[i] = nil
-	}
-	return table
-}
-
 func main() {
-	table := NewTable()
+	if len(os.Args) < 2 {
+		_, _ = fmt.Fprintln(os.Stderr, "Must supply a database filename.")
+		os.Exit(1)
+	}
+
+	filename := os.Args[1]
+	table := dbOpen(filename)
+
 	inputScanner := bufio.NewScanner(os.Stdin)
 	for {
 		printPrompt()
 		readInput(inputScanner)
 
 		if inputScanner.Bytes()[0] == '.' {
-			switch doMetaCommand(inputScanner) {
+			switch doMetaCommand(inputScanner, table) {
 			case MetaCommandSuccess:
 				continue
 			case MetaCommandUnrecognizedCommand:

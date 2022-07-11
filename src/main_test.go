@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -10,7 +11,7 @@ import (
 )
 
 func runScript(commands []string) []string {
-	cmd := exec.Command("go", "run", "main.go")
+	cmd := exec.Command("go", "run", "main.go", "test.db")
 	stdin, _ := cmd.StdinPipe()
 	defer stdin.Close()
 
@@ -30,6 +31,8 @@ func TestDB(t *testing.T) {
 			"select",
 			".exit",
 		})
+		defer os.Remove("test.db")
+
 		expect := []string{
 			"db > Executed.",
 			"db > (1, user1, person1@example.com)",
@@ -47,7 +50,10 @@ func TestDB(t *testing.T) {
 			scripts[i] = fmt.Sprintf("insert %d user%d person%d@example.com", i, i, i)
 		}
 		scripts[len(scripts)-1] = ".exit"
+
 		result := runScript(scripts)
+		defer os.Remove("test.db")
+
 		if result[len(scripts)-2] != "db > Error: Table full." {
 			t.FailNow()
 		}
@@ -61,7 +67,10 @@ func TestDB(t *testing.T) {
 			"select",
 			".exit",
 		}
+
 		result := runScript(script)
+		defer os.Remove("test.db")
+
 		expect := []string{
 			"db > Executed.",
 			fmt.Sprintf("db > (1, %s, %s)", longUsername, longEmail),
@@ -79,13 +88,45 @@ func TestDB(t *testing.T) {
 			"select",
 			".exit",
 		}
+
 		result := runScript(script)
+		defer os.Remove("test.db")
+
 		expect := []string{
 			"db > ID must be positive.",
 			"db > Executed.",
 			"db > ",
 		}
 		if !reflect.DeepEqual(result, expect) {
+			t.FailNow()
+		}
+	})
+
+	t.Run("keeps data after closing connection", func(t *testing.T) {
+		result1 := runScript([]string{
+			"insert 1 user1 person1@example.com",
+			".exit",
+		})
+		expect1 := []string{
+			"db > Executed.",
+			"db > ",
+		}
+		if !reflect.DeepEqual(result1, expect1) {
+			t.FailNow()
+		}
+
+		result2 := runScript([]string{
+			"select",
+			".exit",
+		})
+		defer os.Remove("test.db")
+
+		expect2 := []string{
+			"db > (1, user1, person1@example.com)",
+			"Executed.",
+			"db > ",
+		}
+		if !reflect.DeepEqual(result2, expect2) {
 			t.FailNow()
 		}
 	})
