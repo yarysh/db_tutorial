@@ -77,6 +77,12 @@ type Table struct {
 	Pager   *Pager
 }
 
+type Cursor struct {
+	Table      *Table
+	RowNum     int
+	EndOfTable bool
+}
+
 func printRow(row *Row) {
 	var usernameLastChar, emailLastChar int
 	var r rune
@@ -143,14 +149,40 @@ func getPage(pager *Pager, pageNum int) *[RowsPerPage]*[RowSize]byte {
 	return pager.Pages[pageNum]
 }
 
-func rowSlot(table *Table, rowNum int) *[RowSize]byte {
+func tableStart(table *Table) *Cursor {
+	cursor := &Cursor{}
+	cursor.Table = table
+	cursor.RowNum = 0
+	cursor.EndOfTable = table.NumRows == 0
+
+	return cursor
+}
+
+func tableEnd(table *Table) *Cursor {
+	cursor := &Cursor{}
+	cursor.Table = table
+	cursor.RowNum = table.NumRows
+	cursor.EndOfTable = true
+
+	return cursor
+}
+
+func cursorValue(cursor *Cursor) *[RowSize]byte {
+	rowNum := cursor.RowNum
 	pageNum := rowNum / RowsPerPage
 	rowNumOnPage := rowNum - pageNum*RowsPerPage
-	page := getPage(table.Pager, pageNum)
+	page := getPage(cursor.Table.Pager, pageNum)
 	if page[rowNumOnPage] == nil {
 		page[rowNumOnPage] = &[RowSize]byte{}
 	}
 	return page[rowNumOnPage]
+}
+
+func cursorAdvance(cursor *Cursor) {
+	cursor.RowNum += 1
+	if cursor.RowNum >= cursor.Table.NumRows {
+		cursor.EndOfTable = true
+	}
 }
 
 func pagerOpen(filename string) *Pager {
@@ -310,18 +342,22 @@ func executeInsert(statement *Statement, table *Table) ExecuteResult {
 	}
 
 	rowToInsert := &statement.RowToInsert
+	cursor := tableEnd(table)
 
-	serializeRow(rowToInsert, rowSlot(table, table.NumRows))
+	serializeRow(rowToInsert, cursorValue(cursor))
 	table.NumRows += 1
 
 	return ExecuteSuccess
 }
 
 func executeSelect(statement *Statement, table *Table) ExecuteResult {
+	cursor := tableStart(table)
+
 	var row Row
-	for i := 0; i < table.NumRows; i++ {
-		deserializeRow(rowSlot(table, i), &row)
+	for !cursor.EndOfTable {
+		deserializeRow(cursorValue(cursor), &row)
 		printRow(&row)
+		cursorAdvance(cursor)
 	}
 	return ExecuteSuccess
 }
