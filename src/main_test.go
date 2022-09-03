@@ -130,4 +130,56 @@ func TestDB(t *testing.T) {
 			t.FailNow()
 		}
 	})
+
+	t.Run("allows printing out the structure of a one-node btree", func(t *testing.T) {
+		script := []string{
+			"insert 3 user3 person3@example.com",
+			"insert 1 user1 person1@example.com",
+			"insert 2 user2 person2@example.com",
+			".btree",
+			".exit",
+		}
+
+		result := runScript(script)
+		defer os.Remove("test.db")
+
+		expect := []string{
+			"db > Executed.",
+			"db > Executed.",
+			"db > Executed.",
+			"db > Tree:",
+			"leaf (size 3)",
+			"  - 0 : 3",
+			"  - 1 : 1",
+			"  - 2 : 2",
+			"db > ",
+		}
+		if !reflect.DeepEqual(result, expect) {
+			t.FailNow()
+		}
+	})
+
+	t.Run("prints constants", func(t *testing.T) {
+		script := []string{
+			".constants",
+			".exit",
+		}
+
+		result := runScript(script)
+		defer os.Remove("test.db")
+
+		expect := []string{
+			"db > Constants:",
+			"RowSize: 1152",
+			"CommonNodeHeaderSize: 8",
+			"LeafNodeHeaderSize: 12",
+			"LeafNodeNumCellsSize: 4",
+			"LeafNodeSpaceForCells: 4084",
+			"LeafNodeMaxCells: 3",
+			"db > ",
+		}
+		if !reflect.DeepEqual(result, expect) {
+			t.FailNow()
+		}
+	})
 }
