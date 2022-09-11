@@ -15,6 +15,7 @@ type ExecuteResult int
 
 const (
 	ExecuteSuccess = ExecuteResult(iota)
+	ExecuteDuplicateKey
 	ExecuteTableFull
 )
 
@@ -119,6 +120,14 @@ const LeafNodeCellSize = LeafNodeKeySize + LeafNodeValueSize
 const LeafNodeSpaceForCells = PageSize - LeafNodeHeaderSize
 const LeafNodeMaxCells = LeafNodeSpaceForCells / LeafNodeCellSize
 
+func getNodeType(node *[PageSize]byte) NodeType {
+	return NodeType(binary.BigEndian.Uint16(node[NodeTypeOffset : NodeTypeOffset+NodeTypeSize]))
+}
+
+func setNodeType(node *[PageSize]byte, typ NodeType) {
+	binary.BigEndian.PutUint16(node[NodeTypeOffset:NodeTypeOffset+NodeTypeSize], uint16(typ))
+}
+
 func getLeafNodeNumCells(node *[PageSize]byte) uint32 {
 	return binary.BigEndian.Uint32(node[LeafNodeNumCellsOffset : LeafNodeNumCellsOffset+LeafNodeNumCellsSize])
 }
@@ -198,9 +207,8 @@ func deserializeRow(source []byte, destination *Row) {
 }
 
 func initializeLeafNode(node *[PageSize]byte) {
-	for i := LeafNodeNumCellsOffset; i < LeafNodeNumCellsOffset+LeafNodeNumCellsSize; i++ {
-		node[i] = 0
-	}
+	setNodeType(node, NodeLeaf)
+	setLeafNodeNumCells(node, 0)
 }
 
 func getPage(pager *Pager, pageNum int) *[PageSize]byte {
@@ -252,16 +260,51 @@ func tableStart(table *Table) *Cursor {
 	return cursor
 }
 
-func tableEnd(table *Table) *Cursor {
+/*
+Return the position of the given key.
+If the key is not present, return the position
+where it should be inserted
+*/
+func tableFind(table *Table, key uint32) *Cursor {
+	rootPageNum := table.RootPageNum
+	rootNode := getPage(table.Pager, rootPageNum)
+
+	if getNodeType(rootNode) == NodeLeaf {
+		return leafNodeFind(table, rootPageNum, key)
+	} else {
+		fmt.Println("Need to implement searching an internal node")
+		os.Exit(1)
+	}
+
+	return nil
+}
+
+func leafNodeFind(table *Table, pageNum int, key uint32) *Cursor {
+	node := getPage(table.Pager, pageNum)
+	numCells := getLeafNodeNumCells(node)
+
 	cursor := &Cursor{}
 	cursor.Table = table
-	cursor.PageNum = table.RootPageNum
+	cursor.PageNum = pageNum
 
-	rootNode := getPage(table.Pager, table.RootPageNum)
-	numCells := getLeafNodeNumCells(rootNode)
-	cursor.CellNum = numCells
-	cursor.EndOfTable = true
+	// Binary search
+	minIndex := uint32(0)
+	onePastMaxIndex := numCells
+	for onePastMaxIndex != minIndex {
+		index := (minIndex + onePastMaxIndex) / 2
+		keyAtIndex := getLeafNodeKey(node, index)
+		if key == keyAtIndex {
+			cursor.CellNum = index
+			return cursor
+		}
+		if key < keyAtIndex {
+			onePastMaxIndex = index
+		} else {
+			minIndex = index + 1
+		}
+	}
 
+	cursor.CellNum = minIndex
 	return cursor
 }
 
@@ -463,12 +506,21 @@ func leafNodeInsert(cursor *Cursor, key uint32, value *Row) {
 
 func executeInsert(statement *Statement, table *Table) ExecuteResult {
 	node := getPage(table.Pager, table.RootPageNum)
-	if getLeafNodeNumCells(node) >= LeafNodeMaxCells {
+	numCells := getLeafNodeNumCells(node)
+	if numCells >= LeafNodeMaxCells {
 		return ExecuteTableFull
 	}
 
 	rowToInsert := &statement.RowToInsert
-	cursor := tableEnd(table)
+	keyToInsert := rowToInsert.ID
+	cursor := tableFind(table, keyToInsert)
+
+	if cursor.CellNum < numCells {
+		keyAtIndex := getLeafNodeKey(node, cursor.CellNum)
+		if keyAtIndex == keyToInsert {
+			return ExecuteDuplicateKey
+		}
+	}
 
 	leafNodeInsert(cursor, rowToInsert.ID, rowToInsert)
 
@@ -542,6 +594,9 @@ func main() {
 		switch executeStatement(statement, table) {
 		case ExecuteSuccess:
 			fmt.Println("Executed.")
+			break
+		case ExecuteDuplicateKey:
+			fmt.Println("Error: Duplicate key.")
 			break
 		case ExecuteTableFull:
 			fmt.Println("Error: Table full.")
